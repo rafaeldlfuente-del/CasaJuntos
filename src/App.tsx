@@ -23,7 +23,7 @@ import {
   Copy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { format, isSameDay, startOfWeek, addDays, parseISO, getDay } from 'date-fns';
+import { format, isSameDay, startOfWeek, addDays, parseISO, getDay, differenceInDays } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -166,6 +166,19 @@ export default function App() {
     });
   };
 
+  const getEffectiveAssigned = (task: Task, dateStr: string, persons: Person[]) => {
+    if (!task.autoRotate || task.assignedTo.length <= 1) {
+      return persons.filter(p => task.assignedTo.includes(p.id));
+    }
+    const date = parseISO(dateStr);
+    const refDate = new Date(2024, 0, 1);
+    const days = Math.abs(differenceInDays(date, refDate));
+    const index = days % task.assignedTo.length;
+    const personId = task.assignedTo[index];
+    const person = persons.find(p => p.id === personId);
+    return person ? [person] : [];
+  };
+
   // --- RENDER VIEWS ---
   return (
     <div className="min-h-screen pb-24 md:pb-0 md:pl-[240px] transition-colors duration-300">
@@ -223,9 +236,10 @@ export default function App() {
               onToggle={toggleTaskCompletion} 
               onEditTask={(t) => { setEditingTask(t); setShowTaskModal(true); }}
               onEditMenu={() => setActiveTab('menu')}
+              getEffectiveAssigned={getEffectiveAssigned}
             />
           )}
-          {activeTab === 'semana' && <SemanaView state={state} onToggle={toggleTaskCompletion} />}
+          {activeTab === 'semana' && <SemanaView state={state} onToggle={toggleTaskCompletion} getEffectiveAssigned={getEffectiveAssigned} />}
           {activeTab === 'reparto' && <RepartoView state={state} />}
           {activeTab === 'tareas' && (
             <TareasView 
@@ -332,7 +346,7 @@ function MobileNavItem({ active, onClick, icon, label }: { active: boolean, onCl
 
 // --- VIEWS ---
 
-function HoyView({ state, onToggle, onEditTask, onEditMenu }: { state: AppState, onToggle: (id: string, date: string) => void, onEditTask: (t: Task) => void, onEditMenu: () => void }) {
+function HoyView({ state, onToggle, onEditTask, onEditMenu, getEffectiveAssigned }: { state: AppState, onToggle: (id: string, date: string) => void, onEditTask: (t: Task) => void, onEditMenu: () => void, getEffectiveAssigned: (t: Task, d: string, p: Person[]) => Person[] }) {
   const todayStr = format(new Date(), 'yyyy-MM-dd');
   const dayOfWeek = getDay(new Date());
 
@@ -439,6 +453,7 @@ function HoyView({ state, onToggle, onEditTask, onEditMenu }: { state: AppState,
                           completed={task.completedDates.includes(todayStr)}
                           onToggle={() => onToggle(task.id, todayStr)}
                           onEdit={() => onEditTask(task)}
+                          effectiveAssigned={getEffectiveAssigned(task, todayStr, state.persons)}
                         />
                       ))}
                     </div>
@@ -523,8 +538,8 @@ function HoyView({ state, onToggle, onEditTask, onEditMenu }: { state: AppState,
   );
 }
 
-function TaskCard({ task, persons, completed, onToggle, onEdit }: { task: Task, persons: Person[], completed: boolean, onToggle: () => void, onEdit?: () => void, key?: React.Key }) {
-  const assigned = persons.filter(p => task.assignedTo.includes(p.id));
+function TaskCard({ task, persons, completed, onToggle, onEdit, effectiveAssigned }: { task: Task, persons: Person[], completed: boolean, onToggle: () => void, onEdit?: () => void, effectiveAssigned?: Person[], key?: React.Key }) {
+  const assigned = effectiveAssigned || persons.filter(p => task.assignedTo.includes(p.id));
 
   return (
     <div 
@@ -572,7 +587,7 @@ function TaskCard({ task, persons, completed, onToggle, onEdit }: { task: Task, 
 
 // --- OTHER VIEWS (Simplified for brevity in this turn) ---
 
-function SemanaView({ state, onToggle }: { state: AppState, onToggle: (id: string, date: string) => void }) {
+function SemanaView({ state, onToggle, getEffectiveAssigned }: { state: AppState, onToggle: (id: string, date: string) => void, getEffectiveAssigned: (t: Task, d: string, p: Person[]) => Person[] }) {
   const start = startOfWeek(new Date(), { weekStartsOn: 1 });
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
   const [selectedDay, setSelectedDay] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -613,6 +628,9 @@ function SemanaView({ state, onToggle }: { state: AppState, onToggle: (id: strin
             if (t.frequency === 'puntual' && t.date === dStr) return true;
             if (t.frequency === 'semanal' && t.specificDays?.includes(dow)) return true;
             return false;
+          }).sort((a, b) => {
+            const order = { 'mañana': 0, 'mediodía': 1, 'tarde': 2, 'noche': 3 };
+            return order[a.timeOfDay] - order[b.timeOfDay];
           });
 
           return (
@@ -635,21 +653,24 @@ function SemanaView({ state, onToggle }: { state: AppState, onToggle: (id: strin
                 {dayTasks.length === 0 ? (
                   <p className="text-[10px] text-text-light italic py-4 text-center">Sin tareas</p>
                 ) : (
-                  dayTasks.map(t => (
-                    <div key={t.id} className="p-3 bg-bg rounded-xl border border-border/50 shadow-sm">
-                      <p className="text-xs font-bold leading-tight">{t.name}</p>
-                      <div className="flex items-center justify-between mt-2">
-                        <div className="flex -space-x-1">
-                          {t.assignedTo.map(pid => (
-                            <div key={pid} className="w-5 h-5 rounded-full bg-white border border-border flex items-center justify-center text-[10px] shadow-sm">
-                              {state.persons.find(p => p.id === pid)?.emoji}
-                            </div>
-                          ))}
+                  dayTasks.map(t => {
+                    const effectiveAssigned = getEffectiveAssigned(t, dStr, state.persons);
+                    return (
+                      <div key={t.id} className="p-3 bg-bg rounded-xl border border-border/50 shadow-sm">
+                        <p className="text-xs font-bold leading-tight">{t.name}</p>
+                        <div className="flex items-center justify-between mt-2">
+                          <div className="flex -space-x-1">
+                            {effectiveAssigned.map(p => (
+                              <div key={p.id} className="w-5 h-5 rounded-full bg-white border border-border flex items-center justify-center text-[10px] shadow-sm">
+                                {p.emoji}
+                              </div>
+                            ))}
+                          </div>
+                          <span className="text-[9px] font-bold text-text-light uppercase">{t.timeOfDay}</span>
                         </div>
-                        <span className="text-[9px] font-bold text-text-light uppercase">{t.timeOfDay}</span>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -670,7 +691,7 @@ function RepartoView({ state }: { state: AppState }) {
       return acc + (t.duration * factor);
     }, 0);
 
-    const personStats = state.persons.filter(p => !p.isCareRecipient).map(p => {
+    const personStats = state.persons.map(p => {
       const pMinutes = state.tasks.reduce((acc, t) => {
         if (!t.assignedTo.includes(p.id)) return acc;
         let factor = 0;
@@ -680,7 +701,7 @@ function RepartoView({ state }: { state: AppState }) {
         return acc + ((t.duration * factor) / t.assignedTo.length);
       }, 0);
       return { ...p, minutes: pMinutes, percent: totalMinutes ? Math.round((pMinutes / totalMinutes) * 100) : 0 };
-    });
+    }).filter(p => p.minutes > 0 || !p.isCareRecipient);
 
     return { totalMinutes, personStats };
   }, [state.tasks, state.persons]);
@@ -1024,6 +1045,19 @@ function PersonModal({ isOpen, onClose, person, onSave }: { isOpen: boolean, onC
               {types.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </div>
+          <div className="flex items-center gap-3 p-4 bg-bg rounded-xl border border-border">
+            <input 
+              type="checkbox" 
+              id="isCareRecipient"
+              checked={formData.isCareRecipient}
+              onChange={e => setFormData({ ...formData, isCareRecipient: e.target.checked })}
+              className="w-5 h-5 text-primary rounded focus:ring-primary"
+            />
+            <label htmlFor="isCareRecipient" className="text-sm font-medium cursor-pointer">
+              ¿Es receptor de cuidados?
+              <p className="text-[10px] text-text-light">Marca si esta persona requiere apoyo o seguimiento especial</p>
+            </label>
+          </div>
           {formData.isCareRecipient && (
             <div>
               <label className="text-[10px] font-bold uppercase text-text-light mb-1 block">Notas de cuidados</label>
@@ -1224,7 +1258,7 @@ function TaskModal({ isOpen, onClose, task, persons, onSave }: { isOpen: boolean
             <div>
               <label className="text-[10px] font-bold uppercase text-text-light mb-3 block">Asignado a (Corresponsables)</label>
               <div className="flex flex-wrap gap-2">
-                {persons.filter(p => !p.isCareRecipient).map(p => (
+                {persons.map(p => (
                   <button 
                     key={p.id}
                     onClick={() => {
